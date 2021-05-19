@@ -4,13 +4,13 @@ use std::{
     result,
 };
 
-use crate::EndPoint;
+use crate::Endpoint;
 
 pub type Result<T> = result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    RPC(EndPoint, String), // TODO add endpoint into error
+    RPC(Endpoint, String), // TODO add endpoint into error
 }
 
 impl error::Error for Error {}
@@ -23,8 +23,8 @@ impl Display for Error {
     }
 }
 
-impl From<(EndPoint, String)> for Error {
-    fn from(err: (EndPoint, String)) -> Self {
+impl From<(Endpoint, String)> for Error {
+    fn from(err: (Endpoint, String)) -> Self {
         Self::RPC(err.0, err.1)
     }
 }

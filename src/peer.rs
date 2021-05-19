@@ -12,12 +12,12 @@ use rand::Rng;
 use crate::{
     error::Result,
     logger::{LogSeq, Logger},
-    rpc::{EndPoint, PeerClientRPC},
+    rpc::{Endpoint, PeerClientRPC},
 };
 
 #[derive(Debug)]
 pub struct Vote {
-    pub peer: EndPoint,
+    pub peer: Endpoint,
     pub granted: bool,
     pub term: usize,
     pub log_seq: Option<LogSeq>,
@@ -45,7 +45,7 @@ impl Display for Vote {
 pub struct Receipt {
     pub success: bool,
     pub term: usize,
-    pub endpoint: EndPoint,
+    pub endpoint: Endpoint,
 }
 
 #[derive(Clone)]
@@ -66,11 +66,11 @@ impl FollowerState {
 #[derive(Clone)]
 enum Role {
     Leader {
-        followers: HashMap<EndPoint, FollowerState>,
+        followers: HashMap<Endpoint, FollowerState>,
     },
     Candidate,
     Follower {
-        voted: Option<EndPoint>,
+        voted: Option<Endpoint>,
         leader_alive: bool,
     },
 }
@@ -106,12 +106,12 @@ impl PeerState {
 pub struct Peer<C: PeerClientRPC> {
     state: Arc<Mutex<PeerState>>,
     sleep_time: Duration,
-    host: EndPoint,
-    peers: HashMap<EndPoint, C>,
+    host: Endpoint,
+    peers: HashMap<Endpoint, C>,
 }
 
 impl<C: PeerClientRPC> Peer<C> {
-    pub fn new(logs: &str, host: EndPoint, peer_hosts: Vec<EndPoint>) -> Self {
+    pub fn new(logs: &str, host: Endpoint, peer_hosts: Vec<Endpoint>) -> Self {
         debug!(
             "creating Peer on host={} with dir(logs)={}, other Peers={:?}",
             host, logs, peer_hosts
@@ -131,7 +131,7 @@ impl<C: PeerClientRPC> Peer<C> {
         }
     }
 
-    pub fn append(&mut self, leader: EndPoint, term: usize) -> Receipt {
+    pub fn append(&mut self, leader: Endpoint, term: usize) -> Receipt {
         let mut s = self.state.lock().unwrap();
         if term < s.logs.term {
             Receipt {
@@ -174,7 +174,7 @@ impl<C: PeerClientRPC> Peer<C> {
         }
     }
 
-    pub fn grant_for(&mut self, candidate: EndPoint, term: usize, log_seq: Option<LogSeq>) -> Vote {
+    pub fn grant_for(&mut self, candidate: Endpoint, term: usize, log_seq: Option<LogSeq>) -> Vote {
         let mut s = self.state.lock().unwrap();
 
         debug!(
