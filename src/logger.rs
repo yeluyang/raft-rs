@@ -5,7 +5,7 @@ use std::{
 };
 
 /// FIXME: bugs occur when self.term > other.term but self.index < other.index under derived `PartialOrd`
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct LogSeq {
     pub term: usize,
     pub index: usize,
@@ -40,21 +40,21 @@ impl Logger {
     }
 
     pub fn load(dir: &str) -> Self {
-        let path = Path::new(dir);
-        assert!(path.is_dir());
+        let dir_path = Path::new(dir);
+        assert!(dir_path.is_dir());
 
-        let mut paths = Vec::new();
-        for entry in fs::read_dir(path).unwrap() {
+        let mut log_files = Vec::new();
+        for entry in fs::read_dir(dir_path).unwrap() {
             let path = entry.unwrap().path();
             if let Some(ext) = path.extension() {
                 if ext == "wal" {
-                    paths.push(path);
+                    log_files.push(path);
                 }
             }
         }
 
-        debug!("loading logs from {} files: {:?}", paths.len(), paths);
-        if paths.is_empty() {
+        debug!("loading logs from {} files: {:?}", log_files.len(), log_files);
+        if log_files.is_empty() {
             Self::new()
         } else {
             unimplemented!()
