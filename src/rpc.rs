@@ -2,7 +2,7 @@ use std::{sync::mpsc::Sender, thread};
 
 use crate::{
     error::Result,
-    logger::LogSeq,
+    logger::SequenceID,
     peer::{Receipt, Vote},
 };
 
@@ -21,13 +21,13 @@ pub trait PeerClientRPC: Send + Clone + 'static {
         });
     }
 
-    fn request_vote(&self, host: Endpoint, term: usize, log_seq: Option<LogSeq>) -> Result<Vote>;
+    fn request_vote(&self, host: Endpoint, term: usize, log_seq: Option<SequenceID>) -> Result<Vote>;
 
     fn request_vote_async(
         &self,
         host: Endpoint,
         term: usize,
-        log_seq: Option<LogSeq>,
+        log_seq: Option<SequenceID>,
         ch: Sender<Result<Vote>>,
     ) {
         let agent = self.clone();

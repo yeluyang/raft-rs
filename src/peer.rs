@@ -11,7 +11,7 @@ use rand::Rng;
 
 use crate::{
     error::Result,
-    logger::{LogSeq, Logger},
+    logger::{Logger, SequenceID},
     rpc::{Endpoint, PeerClientRPC},
 };
 
@@ -20,7 +20,7 @@ pub struct Vote {
     pub peer: Endpoint,
     pub granted: bool,
     pub term: usize,
-    pub log_seq: Option<LogSeq>,
+    pub log_seq: Option<SequenceID>,
 }
 
 impl Display for Vote {
@@ -51,7 +51,7 @@ pub struct Receipt {
 #[derive(Clone)]
 struct FollowerState {
     next: usize,
-    matched: Option<LogSeq>,
+    matched: Option<SequenceID>,
 }
 
 impl FollowerState {
@@ -91,13 +91,13 @@ struct PeerState {
 }
 
 impl PeerState {
-    fn new(logs: &str) -> Self {
+    fn new() -> Self {
         Self {
             role: Role::Follower {
                 voted: None,
                 leader_alive: false,
             },
-            logs: Logger::load(logs),
+            logs: Logger::default(),
         }
     }
 }
@@ -124,8 +124,8 @@ impl<C: PeerClientRPC> Peer<C> {
         }
 
         Self {
-            state: Arc::new(Mutex::new(PeerState::new(logs))),
-            sleep_time: get_raft_sleep_deadline_rand(),
+            state: Arc::new(Mutex::new(PeerState::new())),
+            sleep_time: election_interval(),
             host,
             peers,
         }
@@ -174,7 +174,12 @@ impl<C: PeerClientRPC> Peer<C> {
         }
     }
 
-    pub fn grant_for(&mut self, candidate: Endpoint, term: usize, log_seq: Option<LogSeq>) -> Vote {
+    pub fn grant_for(
+        &mut self,
+        candidate: Endpoint,
+        term: usize,
+        log_seq: Option<SequenceID>,
+    ) -> Vote {
         let mut s = self.state.lock().unwrap();
 
         debug!(
@@ -272,7 +277,7 @@ impl<C: PeerClientRPC> Peer<C> {
                     }
                     Role::Candidate => {
                         s.logs.term += 1;
-                        self.sleep_time = get_raft_sleep_deadline_rand();
+                        self.sleep_time = election_interval();
                         debug!(
                             "running as Candidate: term={}, timeout_after={:?}",
                             s.logs.term, self.sleep_time
@@ -325,7 +330,7 @@ impl<C: PeerClientRPC> Peer<C> {
                                                 voted: None,
                                                 leader_alive: false,
                                             };
-                                            self.sleep_time = get_raft_sleep_deadline_rand();
+                                            self.sleep_time = election_interval();
                                             break;
                                         }
                                     }
@@ -358,7 +363,7 @@ impl<C: PeerClientRPC> Peer<C> {
                         leader_alive,
                         ..
                     } => {
-                        trace!("running as Follower, voted for={:?}", voted);
+                        debug!("running as Follower, voted for={:?}", voted);
                         if !*leader_alive {
                             s.role = Role::Candidate;
                             self.sleep_time = Duration::from_millis(0);
@@ -372,6 +377,6 @@ impl<C: PeerClientRPC> Peer<C> {
     }
 }
 
-fn get_raft_sleep_deadline_rand() -> Duration {
+fn election_interval() -> Duration {
     Duration::from_millis(rand::thread_rng().gen_range(100..=500))
 }
