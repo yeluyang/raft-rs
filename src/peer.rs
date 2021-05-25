@@ -11,7 +11,7 @@ use rand::Rng;
 
 use crate::{
     error::Result,
-    logger::{Logger, SequenceID},
+    logger::{LogDiverged, Logger, SequenceID},
     rpc::{Endpoint, PeerClientRPC},
 };
 
@@ -49,24 +49,9 @@ pub struct Receipt {
 }
 
 #[derive(Clone)]
-struct FollowerState {
-    next: usize,
-    matched: Option<SequenceID>,
-}
-
-impl FollowerState {
-    fn new(logs: usize) -> Self {
-        Self {
-            next: logs,
-            matched: Default::default(),
-        }
-    }
-}
-
-#[derive(Clone)]
 enum Role {
     Leader {
-        followers: HashMap<Endpoint, FollowerState>,
+        followers: HashMap<Endpoint, LogDiverged>,
     },
     Candidate,
     Follower {
@@ -133,14 +118,14 @@ impl<C: PeerClientRPC> Peer<C> {
 
     pub fn append(&mut self, leader: Endpoint, term: usize) -> Receipt {
         let mut s = self.state.lock().unwrap();
-        if term < s.logs.term {
+        if term < s.logs.term() {
             Receipt {
                 endpoint: self.host.clone(),
                 success: false,
-                term: s.logs.term,
+                term: s.logs.term(),
             }
         } else {
-            s.logs.term = term;
+            s.logs.set_term(term);
             match &mut s.role {
                 Role::Follower {
                     voted,
@@ -169,7 +154,7 @@ impl<C: PeerClientRPC> Peer<C> {
             Receipt {
                 endpoint: self.host.clone(),
                 success: true,
-                term: s.logs.term,
+                term: s.logs.term(),
             }
         }
     }
@@ -185,11 +170,11 @@ impl<C: PeerClientRPC> Peer<C> {
         debug!(
             "granting for peer={{ host={}, term={}, last_log_seq={:?} }}: self.term={}, self.last_log_seq={:?}",
             candidate,term,log_seq,
-            s.logs.term,
+            s.logs.term(),
             s.logs.get_last_seq(),
         );
 
-        if term < s.logs.term || log_seq < s.logs.get_last_seq() {
+        if term < s.logs.term() || log_seq < s.logs.get_last_seq() {
             debug!(
                 "deny to grant peer={} as leader: candiate's term or log is out of date",
                 candidate
@@ -197,10 +182,10 @@ impl<C: PeerClientRPC> Peer<C> {
             Vote {
                 peer: self.host.clone(),
                 granted: false,
-                term: s.logs.term,
+                term: s.logs.term(),
                 log_seq: s.logs.get_last_seq(),
             }
-        } else if term > s.logs.term {
+        } else if term > s.logs.term() {
             debug!(
                 "grant peer={} as leader, convert self to follower: candiate's term is larger",
                 candidate
@@ -209,11 +194,11 @@ impl<C: PeerClientRPC> Peer<C> {
                 voted: Some(candidate),
                 leader_alive: false,
             };
-            s.logs.term = term;
+            s.logs.set_term(term);
             Vote {
                 peer: self.host.clone(),
                 granted: true,
-                term: s.logs.term,
+                term: s.logs.term(),
                 log_seq: s.logs.get_last_seq(),
             }
         } else if let Role::Follower { voted, .. } = &mut s.role {
@@ -223,7 +208,7 @@ impl<C: PeerClientRPC> Peer<C> {
                     Vote {
                         peer: self.host.clone(),
                         granted: true,
-                        term: s.logs.term,
+                        term: s.logs.term(),
                         log_seq: s.logs.get_last_seq(),
                     }
                 } else {
@@ -231,7 +216,7 @@ impl<C: PeerClientRPC> Peer<C> {
                     Vote {
                         peer: self.host.clone(),
                         granted: false,
-                        term: s.logs.term,
+                        term: s.logs.term(),
                         log_seq: s.logs.get_last_seq(),
                     }
                 }
@@ -241,11 +226,11 @@ impl<C: PeerClientRPC> Peer<C> {
                     candidate
                 );
                 *voted = Some(candidate);
-                s.logs.term = term;
+                s.logs.set_term(term);
                 Vote {
                     peer: self.host.clone(),
                     granted: true,
-                    term: s.logs.term,
+                    term: s.logs.term(),
                     log_seq: s.logs.get_last_seq(),
                 }
             }
@@ -257,7 +242,7 @@ impl<C: PeerClientRPC> Peer<C> {
             Vote {
                 peer: self.host.clone(),
                 granted: false,
-                term: s.logs.term,
+                term: s.logs.term(),
                 log_seq: s.logs.get_last_seq(),
             }
         }
@@ -272,15 +257,16 @@ impl<C: PeerClientRPC> Peer<C> {
                     Role::Leader { .. } => {
                         trace!("running as Leader");
                         for (_, p) in &self.peers {
-                            p.heart_beat(self.host.clone(), s.logs.term);
+                            p.append(self.host.clone(), s.logs.term(), None);
                         }
                     }
                     Role::Candidate => {
-                        s.logs.term += 1;
+                        s.logs.new_term();
                         self.sleep_time = election_interval();
                         debug!(
                             "running as Candidate: term={}, timeout_after={:?}",
-                            s.logs.term, self.sleep_time
+                            s.logs.term(),
+                            self.sleep_time
                         );
 
                         let (vote_sender, vote_recver) = mpsc::channel::<Result<Vote>>();
@@ -297,7 +283,7 @@ impl<C: PeerClientRPC> Peer<C> {
                         for (_, peer) in &self.peers {
                             peer.request_vote_async(
                                 self.host.clone(),
-                                s.logs.term,
+                                s.logs.term(),
                                 s.logs.get_last_seq(),
                                 vote_sender.clone(),
                             );
@@ -322,7 +308,7 @@ impl<C: PeerClientRPC> Peer<C> {
                                             debug!(
                                                 "receive greater term or log seq from peer, convert self to follower: peers={}, self={{ term={}, log_seq={:?} }}",
                                                 vote,
-                                                s.logs.term,
+                                                s.logs.term(),
                                                 s.logs.get_last_seq()
                                             );
 
@@ -352,7 +338,7 @@ impl<C: PeerClientRPC> Peer<C> {
                             for (peer_endpoint, _) in &self.peers {
                                 followers.insert(
                                     peer_endpoint.clone(),
-                                    FollowerState::new(s.logs.applied),
+                                    LogDiverged::new(s.logs.applied()),
                                 );
                             }
                             s.role = Role::Leader { followers }

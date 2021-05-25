@@ -13,15 +13,30 @@ impl Display for SequenceID {
     }
 }
 
+#[derive(Clone)]
+pub struct LogDiverged {
+    next: usize,
+    matched: Option<SequenceID>,
+}
+
+impl LogDiverged {
+    pub fn new(next: usize) -> Self {
+        Self {
+            next,
+            matched: None,
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct Logger {
     // persistent state
-    pub term: usize,
+    term: usize,
     entries: Vec<SequenceID>,
 
     // volatile state
     committed: usize,
-    pub applied: usize,
+    applied: usize,
 }
 
 impl Logger {
@@ -48,5 +63,22 @@ impl Logger {
         } else {
             None
         }
+    }
+
+    pub fn applied(&self) -> usize {
+        self.applied
+    }
+
+    pub fn term(&self) -> usize {
+        self.term
+    }
+
+    pub fn new_term(&mut self) -> usize {
+        self.term += 1;
+        self.term
+    }
+    pub fn set_term(&mut self, term: usize) {
+        assert!(self.term > term);
+        self.term = term;
     }
 }
