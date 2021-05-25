@@ -1,9 +1,9 @@
-use std::{collections::HashMap, sync::mpsc::Sender, thread};
+use std::{sync::mpsc::Sender, thread};
 
 use crate::{
     error::Result,
     logger::SequenceID,
-    peer::{Receipt, Vote},
+    role::{Receipt, Vote},
 };
 
 pub type Endpoint = String;

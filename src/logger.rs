@@ -3,28 +3,13 @@ use std::fmt::{self, Display, Formatter};
 /// FIXME: bugs occur when self.term > other.term but self.index < other.index under derived `PartialOrd`
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct SequenceID {
-    pub term: usize,
-    pub index: usize,
+    term: usize,
+    index: usize,
 }
 
 impl Display for SequenceID {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{{ term={}, index={} }}", self.term, self.index)
-    }
-}
-
-#[derive(Clone)]
-pub struct LogDiverged {
-    next: usize,
-    matched: Option<SequenceID>,
-}
-
-impl LogDiverged {
-    pub fn new(next: usize) -> Self {
-        Self {
-            next,
-            matched: None,
-        }
     }
 }
 
@@ -57,7 +42,7 @@ impl Logger {
         }
     }
 
-    pub fn get_last_seq(&self) -> Option<SequenceID> {
+    pub fn last_seq_id(&self) -> Option<SequenceID> {
         if let Some(entry) = self.entries.get(self.applied) {
             Some(entry.clone())
         } else {

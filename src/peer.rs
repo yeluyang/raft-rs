@@ -15,39 +15,6 @@ use crate::{
     rpc::{Endpoint, PeerClientRPC},
 };
 
-#[derive(Debug)]
-pub struct Vote {
-    pub peer: Endpoint,
-    pub granted: bool,
-    pub term: usize,
-    pub log_seq: Option<SequenceID>,
-}
-
-impl Display for Vote {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(log_seq) = &self.log_seq {
-            write!(
-                f,
-                "{{ granted?={} from peer {{endpoint={}, term={}, log_seq={}}} }}",
-                self.peer, self.granted, self.term, log_seq
-            )
-        } else {
-            write!(
-                f,
-                "{{ granted?={} from peer {{endpoint={}, term={}, log_seq=None }} }}",
-                self.peer, self.granted, self.term,
-            )
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Receipt {
-    pub success: bool,
-    pub term: usize,
-    pub endpoint: Endpoint,
-}
-
 #[derive(Clone)]
 enum Role {
     Leader {
@@ -183,7 +150,7 @@ impl<C: PeerClientRPC> Peer<C> {
                 peer: self.host.clone(),
                 granted: false,
                 term: s.logs.term(),
-                log_seq: s.logs.get_last_seq(),
+                seq_id: s.logs.get_last_seq(),
             }
         } else if term > s.logs.term() {
             debug!(
@@ -199,7 +166,7 @@ impl<C: PeerClientRPC> Peer<C> {
                 peer: self.host.clone(),
                 granted: true,
                 term: s.logs.term(),
-                log_seq: s.logs.get_last_seq(),
+                seq_id: s.logs.get_last_seq(),
             }
         } else if let Role::Follower { voted, .. } = &mut s.role {
             if let Some(end_point) = voted {
@@ -209,7 +176,7 @@ impl<C: PeerClientRPC> Peer<C> {
                         peer: self.host.clone(),
                         granted: true,
                         term: s.logs.term(),
-                        log_seq: s.logs.get_last_seq(),
+                        seq_id: s.logs.get_last_seq(),
                     }
                 } else {
                     debug!( "deny ot grant peer={} as leader: have been granted other peer={} as leader", candidate, end_point);
@@ -217,7 +184,7 @@ impl<C: PeerClientRPC> Peer<C> {
                         peer: self.host.clone(),
                         granted: false,
                         term: s.logs.term(),
-                        log_seq: s.logs.get_last_seq(),
+                        seq_id: s.logs.get_last_seq(),
                     }
                 }
             } else {
@@ -231,7 +198,7 @@ impl<C: PeerClientRPC> Peer<C> {
                     peer: self.host.clone(),
                     granted: true,
                     term: s.logs.term(),
-                    log_seq: s.logs.get_last_seq(),
+                    seq_id: s.logs.get_last_seq(),
                 }
             }
         } else {
@@ -243,7 +210,7 @@ impl<C: PeerClientRPC> Peer<C> {
                 peer: self.host.clone(),
                 granted: false,
                 term: s.logs.term(),
-                log_seq: s.logs.get_last_seq(),
+                seq_id: s.logs.get_last_seq(),
             }
         }
     }

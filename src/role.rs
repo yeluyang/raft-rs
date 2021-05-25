@@ -1,8 +1,10 @@
 use std::{
     collections::HashMap,
+    fmt::{self, Display, Formatter},
     sync::mpsc,
     thread,
     time::{Duration, SystemTime},
+    usize,
 };
 
 extern crate rand;
@@ -10,10 +12,94 @@ use rand::Rng;
 
 use crate::{
     error::Result,
-    logger::{LogDiverged, Logger, SequenceID},
-    peer::Vote,
+    logger::{Logger, SequenceID},
     rpc::{Endpoint, PeerClientRPC},
 };
+
+#[derive(Debug)]
+struct Signature {
+    endpoint: Endpoint,
+    term: usize,
+    seq_id: Option<SequenceID>,
+}
+
+impl Signature {
+    fn new(endpoint: Endpoint, term: usize, seq_id: Option<SequenceID>) -> Self {
+        Self {
+            endpoint,
+            term,
+            seq_id,
+        }
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(log_seq) = &self.seq_id {
+            write!(
+                f,
+                "{{ endpoint={}, term={}, log_seq={} }}",
+                self.endpoint, self.term, log_seq
+            )
+        } else {
+            write!(
+                f,
+                "{{ endpoint={}, term={}, log_seq=None }}",
+                self.endpoint, self.term,
+            )
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Vote {
+    pub granted: bool,
+    peer: Signature,
+}
+
+impl Display for Vote {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ granted?={} from peer={} }}", self.granted, self.peer,)
+    }
+}
+
+impl Vote {
+    fn grant(peer: Signature) -> Self {
+        Self {
+            granted: true,
+            peer,
+        }
+    }
+
+    fn deny(peer: Signature) -> Self {
+        Self {
+            granted: false,
+            peer,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Receipt {
+    success: bool,
+    term: usize,
+    endpoint: Endpoint,
+}
+
+#[derive(Clone)]
+pub struct Diverged {
+    next: usize,
+    matched: Option<SequenceID>,
+}
+
+impl Diverged {
+    pub fn new(next: usize) -> Self {
+        Self {
+            next,
+            matched: None,
+        }
+    }
+}
 
 enum Role<C: PeerClientRPC> {
     Follower(Follower<C>),
@@ -73,6 +159,29 @@ impl<C: PeerClientRPC> Follower<C> {
     fn interval(&self) -> Option<Duration> {
         Some(self.interval)
     }
+
+    fn grant(&mut self, candidate: Signature) -> Vote {
+        // XXX: will the case `self.voted == candidate.endpoint && self.term > candidate.term` happen?
+
+        if candidate.term < self.state.logger.term() {
+            return Vote::deny(self.state.sign());
+        } else if candidate.term > self.state.logger.term() {
+            self.state.logger.set_term(candidate.term);
+        }
+
+        if let Some(ref v) = self.voted {
+            if v != &candidate.endpoint {
+                return Vote::deny(self.state.sign());
+            }
+        };
+
+        // `self.term <= candidate.term and not vote for anyone yet` for now
+        if candidate.seq_id >= self.state.logger.last_seq_id() {
+            return Vote::grant(self.state.sign());
+        } else {
+            return Vote::deny(self.state.sign());
+        }
+    }
 }
 
 struct Candidate<C: PeerClientRPC> {
@@ -106,9 +215,9 @@ impl<C: PeerClientRPC> Candidate<C> {
 
         for (_, peer) in &self.state.peers {
             peer.request_vote_async(
-                self.state.host.clone(),
+                self.state.endpoint.clone(),
                 term,
-                self.state.logger.get_last_seq(),
+                self.state.logger.last_seq_id(),
                 vote_sender.clone(),
             );
         }
@@ -156,7 +265,7 @@ impl<C: PeerClientRPC> Candidate<C> {
 
 struct Leader<C: PeerClientRPC> {
     // raft leader state
-    peers_log_div: HashMap<Endpoint, LogDiverged>,
+    peers_log_div: HashMap<Endpoint, Diverged>,
     interval: Duration,
 
     state: State<C>, // raft state
@@ -164,13 +273,10 @@ struct Leader<C: PeerClientRPC> {
 
 impl<C: PeerClientRPC> Leader<C> {
     fn new(state: State<C>) -> Self {
-        let mut peers_log_div: HashMap<Endpoint, LogDiverged> =
+        let mut peers_log_div: HashMap<Endpoint, Diverged> =
             HashMap::with_capacity(state.peers.len());
         for (peer_endpoint, _) in &state.peers {
-            peers_log_div.insert(
-                peer_endpoint.clone(),
-                LogDiverged::new(state.logger.applied()),
-            );
+            peers_log_div.insert(peer_endpoint.clone(), Diverged::new(state.logger.applied()));
         }
 
         Self {
@@ -190,7 +296,7 @@ impl<C: PeerClientRPC> Leader<C> {
 }
 
 struct State<C: PeerClientRPC> {
-    host: Endpoint,
+    endpoint: Endpoint,
     peers: HashMap<Endpoint, C>,
     logger: Logger, // raft log state
 }
@@ -203,10 +309,18 @@ impl<C: PeerClientRPC> State<C> {
             peers.insert(h, client);
         }
         Self {
-            host,
+            endpoint: host,
             peers,
             logger: Logger::new(seq_ids),
         }
+    }
+
+    fn sign(&self) -> Signature {
+        Signature::new(
+            self.endpoint.clone(),
+            self.logger.term(),
+            self.logger.last_seq_id(),
+        )
     }
 }
 
