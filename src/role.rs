@@ -101,101 +101,140 @@ impl Diverged {
     }
 }
 
-enum Role<C: PeerClientRPC> {
-    Follower(Follower<C>),
-    Candidate(Candidate<C>),
-    Leader(Leader<C>),
+enum Role {
+    Follower {
+        voted: Option<Endpoint>,
+        last_heart_beat: SystemTime,
+    },
+    Candidate,
+    Leader {
+        followers: HashMap<Endpoint, Diverged>,
+    },
 }
 
-impl<C: PeerClientRPC> Role<C> {
-    fn new(host: Endpoint, seq_ids: Vec<SequenceID>, peer_hosts: Vec<Endpoint>) -> Self {
-        Self::Follower(Follower::new(State::<C>::new(host, seq_ids, peer_hosts)))
+impl Role {
+    fn new() -> Self {
+        Self::follower()
     }
 
-    fn step(mut self) -> Self {
-        match self {
-            Self::Follower(r) => r.step(),
-            Self::Candidate(r) => r.step(),
-            Self::Leader(r) => r.step(),
-        }
-    }
-
-    fn interval(&self) -> Option<Duration> {
-        match self {
-            Self::Follower(r) => r.interval(),
-            Self::Candidate(r) => r.interval(),
-            Self::Leader(r) => r.interval(),
-        }
-    }
-}
-
-struct Follower<C: PeerClientRPC> {
-    // raft follower state
-    voted: Option<Endpoint>,
-    interval: Duration,
-    last_heart_beat: SystemTime,
-
-    state: State<C>, // raft state
-}
-
-impl<C: PeerClientRPC> Follower<C> {
-    fn new(state: State<C>) -> Self {
-        Self {
+    fn follower() -> Self {
+        Self::Follower {
             voted: None,
-            interval: election_interval(),
             last_heart_beat: SystemTime::now(),
-            state,
         }
     }
 
-    fn step(mut self) -> Role<C> {
-        if self.last_heart_beat.elapsed().unwrap() > self.interval {
-            Role::Candidate(Candidate::new(self.state))
-        } else {
-            Role::Follower(self)
+    fn candidate() -> Self {
+        Self::Candidate
+    }
+
+    fn leader(peers: Vec<Endpoint>, applied: usize) -> Self {
+        let mut followers: HashMap<Endpoint, Diverged> = HashMap::with_capacity(peers.len());
+        for peer in peers {
+            followers.insert(peer, Diverged::new(applied));
+        }
+
+        Self::Leader { followers }
+    }
+}
+
+struct State<C: PeerClientRPC> {
+    endpoint: Endpoint,
+    peers: HashMap<Endpoint, C>,
+    logger: Logger, // raft log state
+
+    role: Role,
+    interval: Option<Duration>,
+}
+
+impl<C: PeerClientRPC> State<C> {
+    fn new(endpoint: Endpoint, seq_ids: Vec<SequenceID>, peer_hosts: Vec<Endpoint>) -> Self {
+        let mut peers = HashMap::new();
+        for h in peer_hosts {
+            let client = PeerClientRPC::connect(h.clone());
+            peers.insert(h, client);
+        }
+        Self {
+            endpoint,
+            peers,
+            logger: Logger::new(seq_ids),
+
+            role: Role::follower(),
+            interval: Some(election_interval()),
         }
     }
 
     fn interval(&self) -> Option<Duration> {
-        Some(self.interval)
+        self.interval
+    }
+
+    fn sign(&self) -> Signature {
+        Signature::new(
+            self.endpoint.clone(),
+            self.logger.term(),
+            self.logger.last_seq_id(),
+        )
+    }
+
+    fn become_follower(&mut self) {
+        self.interval = Some(election_interval());
+        self.role = Role::follower();
+    }
+
+    fn become_candidate(&mut self) {
+        self.interval = None;
+        self.role = Role::candidate();
+    }
+
+    fn become_leader(&mut self) {
+        self.interval = Some(Duration::from_millis(ELECTION_INTERVAL_MIN / 2));
+        self.role = Role::leader(self.peers.keys().cloned().collect(), self.logger.applied());
     }
 
     fn grant(&mut self, candidate: Signature) -> Vote {
         // XXX: will the case `self.voted == candidate.endpoint && self.term > candidate.term` happen?
 
-        if candidate.term < self.state.logger.term() {
-            return Vote::deny(self.state.sign());
-        } else if candidate.term > self.state.logger.term() {
-            self.state.logger.set_term(candidate.term);
-        }
+        match &self.role {
+            Role::Follower { voted, .. } => {
+                if candidate.term < self.logger.term() {
+                    return Vote::deny(self.sign());
+                } else if candidate.term > self.logger.term() {
+                    self.logger.set_term(candidate.term);
+                }
 
-        if let Some(ref v) = self.voted {
-            if v != &candidate.endpoint {
-                return Vote::deny(self.state.sign());
+                if let Some(ref v) = voted {
+                    if v != &candidate.endpoint {
+                        return Vote::deny(self.sign());
+                    }
+                };
+
+                // `self.term <= candidate.term and not vote for anyone yet` for now
+                if candidate.seq_id >= self.logger.last_seq_id() {
+                    Vote::grant(self.sign())
+                } else {
+                    Vote::deny(self.sign())
+                }
             }
-        };
-
-        // `self.term <= candidate.term and not vote for anyone yet` for now
-        if candidate.seq_id >= self.state.logger.last_seq_id() {
-            return Vote::grant(self.state.sign());
-        } else {
-            return Vote::deny(self.state.sign());
+            _ => unimplemented!(),
         }
     }
-}
 
-struct Candidate<C: PeerClientRPC> {
-    // raft candidate state
-    state: State<C>, // raft state
-}
-
-impl<C: PeerClientRPC> Candidate<C> {
-    fn new(state: State<C>) -> Self {
-        Self { state }
+    fn follower_step(&mut self) {
+        if let Role::Follower {
+            last_heart_beat, ..
+        } = &self.role
+        {
+            if last_heart_beat.elapsed().unwrap() > self.interval.unwrap() {
+                self.become_candidate();
+                return self.candidate_step();
+            }
+        } else {
+            unreachable!();
+        };
     }
 
-    fn step(mut self) -> Role<C> {
-        let term = self.state.logger.new_term();
+    fn candidate_step(&mut self) {
+        let term = self.logger.new_term();
         let timeout_duration = election_interval();
         debug!(
             "running as Candidate: term={}, timeout_after={:?}",
@@ -213,11 +252,11 @@ impl<C: PeerClientRPC> Candidate<C> {
         });
         // TODO add `append` notify
 
-        for (_, peer) in &self.state.peers {
+        for (_, peer) in &self.peers {
             peer.request_vote_async(
-                self.state.endpoint.clone(),
+                self.endpoint.clone(),
                 term,
-                self.state.logger.last_seq_id(),
+                self.logger.last_seq_id(),
                 vote_sender.clone(),
             );
         }
@@ -235,7 +274,7 @@ impl<C: PeerClientRPC> Candidate<C> {
                         } else {
                             deny += 1;
                         }
-                        if granted + deny >= self.state.peers.len() {
+                        if granted + deny >= self.peers.len() {
                             break;
                         }
                     }
@@ -245,82 +284,15 @@ impl<C: PeerClientRPC> Candidate<C> {
                 break;
             }
         }
-        if granted >= self.state.peers.len() / 2 {
+        if granted >= self.peers.len() / 2 {
             // become leader
             debug!(
                 "receive {}/{} granted vote from peers, become leader",
                 granted,
-                self.state.peers.len(),
+                self.peers.len(),
             );
-            Role::Leader(Leader::new(self.state))
-        } else {
-            Role::Candidate(self)
+            self.become_leader();
         }
-    }
-
-    fn interval(&self) -> Option<Duration> {
-        None
-    }
-}
-
-struct Leader<C: PeerClientRPC> {
-    // raft leader state
-    peers_log_div: HashMap<Endpoint, Diverged>,
-    interval: Duration,
-
-    state: State<C>, // raft state
-}
-
-impl<C: PeerClientRPC> Leader<C> {
-    fn new(state: State<C>) -> Self {
-        let mut peers_log_div: HashMap<Endpoint, Diverged> =
-            HashMap::with_capacity(state.peers.len());
-        for (peer_endpoint, _) in &state.peers {
-            peers_log_div.insert(peer_endpoint.clone(), Diverged::new(state.logger.applied()));
-        }
-
-        Self {
-            interval: Duration::from_millis(ELECTION_INTERVAL_MIN / 2),
-            peers_log_div,
-            state,
-        }
-    }
-
-    fn step(mut self) -> Role<C> {
-        unimplemented!()
-    }
-
-    fn interval(&self) -> Option<Duration> {
-        Some(self.interval)
-    }
-}
-
-struct State<C: PeerClientRPC> {
-    endpoint: Endpoint,
-    peers: HashMap<Endpoint, C>,
-    logger: Logger, // raft log state
-}
-
-impl<C: PeerClientRPC> State<C> {
-    fn new(host: Endpoint, seq_ids: Vec<SequenceID>, peer_hosts: Vec<Endpoint>) -> Self {
-        let mut peers = HashMap::new();
-        for h in peer_hosts {
-            let client = PeerClientRPC::connect(h.clone());
-            peers.insert(h, client);
-        }
-        Self {
-            endpoint: host,
-            peers,
-            logger: Logger::new(seq_ids),
-        }
-    }
-
-    fn sign(&self) -> Signature {
-        Signature::new(
-            self.endpoint.clone(),
-            self.logger.term(),
-            self.logger.last_seq_id(),
-        )
     }
 }
 
