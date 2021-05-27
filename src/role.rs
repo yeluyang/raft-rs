@@ -192,30 +192,57 @@ impl<C: PeerClientRPC> State<C> {
     }
 
     fn grant(&mut self, candidate: Signature) -> Vote {
-        // XXX: will the case `self.voted == candidate.endpoint && self.term > candidate.term` happen?
-
+        if candidate.term < self.logger.term() {
+            Vote::deny(self.sign());
+        }
         match &self.role {
-            Role::Follower { voted, .. } => {
-                if candidate.term < self.logger.term() {
-                    return Vote::deny(self.sign());
-                } else if candidate.term > self.logger.term() {
+            Role::Follower { .. } => self.follower_grant(candidate),
+            _ => {
+                if candidate.term > self.logger.term() {
+                    self.become_follower();
                     self.logger.set_term(candidate.term);
-                }
 
-                if let Some(ref v) = voted {
-                    if v != &candidate.endpoint {
-                        return Vote::deny(self.sign());
-                    }
-                };
-
-                // `self.term <= candidate.term and not vote for anyone yet` for now
-                if candidate.seq_id >= self.logger.last_seq_id() {
-                    Vote::grant(self.sign())
+                    self.follower_grant(candidate)
                 } else {
                     Vote::deny(self.sign())
                 }
             }
-            _ => unimplemented!(),
+        }
+    }
+
+    fn follower_grant(&mut self, candidate: Signature) -> Vote {
+        // should deny smaller term outside
+        // because all role will deny this, not only follower.
+        assert!(candidate.term >= self.logger.term());
+
+        if let Role::Follower { voted, .. } = &self.role {
+            // XXX: will the case `self.voted == candidate.endpoint && self.term > candidate.term` happen?
+            if candidate.term > self.logger.term() {
+                self.logger.set_term(candidate.term);
+            }
+
+            if let Some(ref v) = voted {
+                if v != &candidate.endpoint {
+                    return Vote::deny(self.sign());
+                }
+            };
+
+            // `self.term <= candidate.term and not vote for anyone yet` for now
+            if candidate.seq_id >= self.logger.last_seq_id() {
+                Vote::grant(self.sign())
+            } else {
+                Vote::deny(self.sign())
+            }
+        } else {
+            unreachable!()
+        }
+    }
+
+    fn step(&mut self) {
+        match self.role {
+            Role::Follower { .. } => self.follower_step(),
+            Role::Candidate => self.candidate_step(),
+            Role::Leader { .. } => self.leader_step(),
         }
     }
 
@@ -293,6 +320,10 @@ impl<C: PeerClientRPC> State<C> {
             );
             self.become_leader();
         }
+    }
+
+    fn leader_step(&mut self) {
+        unimplemented!()
     }
 }
 
