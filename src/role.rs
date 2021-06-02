@@ -82,6 +82,7 @@ impl Vote {
     }
 }
 
+// TODO impl Display
 #[derive(Debug)]
 pub struct Receipt {
     success: bool,
@@ -321,7 +322,28 @@ impl<C: PeerClientRPC> State<C> {
     }
 
     fn leader_step(&mut self) {
-        unimplemented!()
+        if let Role::Leader { followers } = &self.role {
+            // TODO sync log
+            let receipts = block_on(async {
+                let mut hb_futures = Vec::new();
+                for (endpoint, _) in followers {
+                    let peer = &self.peers[endpoint];
+                    hb_futures.push(peer.append(self.endpoint.clone(), self.logger.term(), None));
+                }
+                // TODO add timeout
+                join_all(hb_futures).await
+            });
+            for r in receipts {
+                match r {
+                    Err(err) => error!("{}", err), // XXX: do more error handling?
+                    // TODO use Receipt::Display after it imple
+                    // TODO handling when term is greater
+                    Ok(receipt) => debug!("{:?}", receipt),
+                }
+            }
+        } else {
+            unreachable!()
+        }
     }
 }
 
