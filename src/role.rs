@@ -1,8 +1,6 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
-    sync::mpsc,
-    thread,
     time::{Duration, SystemTime},
     usize,
 };
@@ -10,8 +8,13 @@ use std::{
 extern crate rand;
 use rand::Rng;
 
+extern crate async_std;
+use async_std::task::{self};
+
+extern crate futures;
+use futures::{executor::block_on, future::join_all, pin_mut, select, FutureExt};
+
 use crate::{
-    error::Result,
     logger::{Logger, SequenceID},
     rpc::{Endpoint, PeerClientRPC},
 };
@@ -193,18 +196,18 @@ impl<C: PeerClientRPC> State<C> {
 
     fn grant(&mut self, candidate: Signature) -> Vote {
         if candidate.term < self.logger.term() {
-            Vote::deny(self.sign());
+            return Vote::deny(self.sign());
         }
         match &self.role {
             Role::Follower { .. } => self.follower_grant(candidate),
-            _ => {
+            Role::Candidate | Role::Leader { .. } => {
                 if candidate.term > self.logger.term() {
                     self.become_follower();
                     self.logger.set_term(candidate.term);
 
-                    self.follower_grant(candidate)
+                    return self.follower_grant(candidate);
                 } else {
-                    Vote::deny(self.sign())
+                    return Vote::deny(self.sign());
                 }
             }
         }
@@ -268,49 +271,44 @@ impl<C: PeerClientRPC> State<C> {
             term, timeout_duration,
         );
 
-        let (vote_sender, vote_recver) = mpsc::channel::<Result<Vote>>();
-        let (tick_sender, tick_recver) = mpsc::channel::<()>();
-
-        thread::spawn(move || {
-            thread::sleep(timeout_duration);
-            tick_sender
-                .send(())
-                .unwrap_or_else(|err| error!("candidate timeout ticker error: {}", err));
-        });
-        // TODO add `append` notify
-
-        for (_, peer) in &self.peers {
-            peer.request_vote_async(
-                self.endpoint.clone(),
-                term,
-                self.logger.last_seq_id(),
-                vote_sender.clone(),
-            );
-        }
-
-        let mut granted: usize = 0;
-        let mut deny: usize = 0;
-        loop {
-            if let Ok(vote) = vote_recver.try_recv() {
-                match vote {
-                    Err(err) => debug!("failed to get vote: {}", err),
-                    Ok(vote) => {
-                        debug!("receive vote: {}", vote,);
-                        if vote.granted {
-                            granted += 1;
-                        } else {
-                            deny += 1;
-                        }
-                        if granted + deny >= self.peers.len() {
-                            break;
-                        }
-                    }
-                };
-            } else if let Ok(_) = tick_recver.try_recv() {
-                debug!("timeout when election");
-                break;
+        let granted = block_on(async {
+            let ticker = async {
+                task::sleep(timeout_duration).await;
             }
-        }
+            .fuse();
+            // TODO add `append` notify
+
+            let mut vote_futures = Vec::new();
+            for (_, peer) in &self.peers {
+                vote_futures.push(peer.request_vote(
+                    self.endpoint.clone(),
+                    term,
+                    self.logger.last_seq_id(),
+                ));
+            }
+            let vote_results = join_all(vote_futures).fuse();
+
+            pin_mut!(ticker, vote_results);
+
+            let mut granted: usize = 0;
+            select! {
+                _ = ticker => debug!("timeout when election"),
+                votes = vote_results => {
+                    for vote in votes {
+                        match vote {
+                            Err(err) => debug!("failed to get vote: {}", err),
+                            Ok(vote) => {
+                                debug!("receive vote: {}", vote,);
+                                if vote.granted {
+                                    granted += 1;
+                                }
+                            }
+                        };
+                    };
+                },
+            };
+            return granted;
+        });
         if granted >= self.peers.len() / 2 {
             // become leader
             debug!(

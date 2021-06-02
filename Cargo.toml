@@ -10,3 +10,7 @@ edition = "2018"
 
 log = "0.4.14"
 rand = "0.8.3"
+
+async-std = "1.9.0"
+async-trait = "0.1.50"
+futures = "0.3.15"

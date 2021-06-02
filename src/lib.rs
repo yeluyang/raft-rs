@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate futures;
+
 mod error;
 pub use error::{Error, Result};
 
